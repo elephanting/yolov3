@@ -111,22 +111,14 @@ def create_modules(module_defs, img_size, cfg):
             # Initialize preceding Conv2d() bias (https://arxiv.org/pdf/1708.02002.pdf section 3.3)
             try:
                 j = layers[yolo_index] if 'from' in mdef else -1
-                #print("1")
                 # If previous layer is a dropout layer, get the one before
                 if module_list[j].__class__.__name__ == 'Dropout':
                     j -= 1
-                #print("2")
                 bias_ = module_list[j][0].bias  # shape(255,)
-                #print("3")
                 bias = bias_[:modules.no * modules.na].view(modules.na, -1)  # shape(3,85)
-                #print("4")
-                #print(bias)
                 bias[:, 4] += -4.5  # obj
-                #print("5")
                 bias[:, 5:] += math.log(0.6 / (modules.nc - 0.99))  # cls (sigmoid(p) = 1/nc)
-                #print("6")
                 module_list[j][0].bias = torch.nn.Parameter(bias_, requires_grad=bias_.requires_grad)
-                #print("7")
             except:
                 print('WARNING: smart bias initialization failure.')
 
@@ -235,7 +227,6 @@ class YOLOLayer(nn.Module):
 
         else:  # inference
             io = p.clone()  # inference output
-            #print(io.shape)
             io[..., :2] = torch.sigmoid(io[..., :2]) + self.grid  # xy
             io[..., 2:4] = torch.exp(io[..., 2:4]) * self.anchor_wh  # wh yolo method
             io[..., :4] *= self.stride
