@@ -1,6 +1,6 @@
-from utils.google_utils import *
-from utils.layers import *
-from utils.parse_config import *
+from yolov3.utils.google_utils import *
+from yolov3.utils.layers import *
+from yolov3.utils.parse_config import *
 
 ONNX_EXPORT = False
 
@@ -49,6 +49,8 @@ def create_modules(module_defs, img_size, cfg):
                 modules.add_module('activation', Swish())
             elif mdef['activation'] == 'mish':
                 modules.add_module('activation', Mish())
+            elif mdef['activation'] == 'relu':
+                modules.add_module('activation', nn.ReLU())
 
         elif mdef['type'] == 'BatchNorm2d':
             filters = output_filters[-1]
@@ -90,6 +92,9 @@ def create_modules(module_defs, img_size, cfg):
         elif mdef['type'] == 'reorg3d':  # yolov3-spp-pan-scale
             pass
 
+        elif mdef['type'] == 'out':
+            modules = OutLayer()
+
         elif mdef['type'] == 'yolo':
             yolo_index += 1
             stride = [32, 16, 8]  # P5, P4, P3 strides
@@ -106,14 +111,22 @@ def create_modules(module_defs, img_size, cfg):
             # Initialize preceding Conv2d() bias (https://arxiv.org/pdf/1708.02002.pdf section 3.3)
             try:
                 j = layers[yolo_index] if 'from' in mdef else -1
+                #print("1")
                 # If previous layer is a dropout layer, get the one before
                 if module_list[j].__class__.__name__ == 'Dropout':
                     j -= 1
+                #print("2")
                 bias_ = module_list[j][0].bias  # shape(255,)
+                #print("3")
                 bias = bias_[:modules.no * modules.na].view(modules.na, -1)  # shape(3,85)
+                #print("4")
+                #print(bias)
                 bias[:, 4] += -4.5  # obj
+                #print("5")
                 bias[:, 5:] += math.log(0.6 / (modules.nc - 0.99))  # cls (sigmoid(p) = 1/nc)
+                #print("6")
                 module_list[j][0].bias = torch.nn.Parameter(bias_, requires_grad=bias_.requires_grad)
+                #print("7")
             except:
                 print('WARNING: smart bias initialization failure.')
 
@@ -132,6 +145,13 @@ def create_modules(module_defs, img_size, cfg):
         routs_binary[i] = True
     return module_list, routs_binary
 
+
+class OutLayer(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x):
+        return x
 
 class YOLOLayer(nn.Module):
     def __init__(self, anchors, nc, img_size, yolo_index, layers, stride):
@@ -157,7 +177,7 @@ class YOLOLayer(nn.Module):
         self.ng = torch.tensor(ng, dtype=torch.float)
 
         # build xy offsets
-        if not self.training:
+        if not self.training or hasattr(self, 'grid') is False:
             yv, xv = torch.meshgrid([torch.arange(self.ny, device=device), torch.arange(self.nx, device=device)])
             self.grid = torch.stack((xv, yv), 2).view((1, 1, self.ny, self.nx, 2)).float()
 
@@ -215,6 +235,7 @@ class YOLOLayer(nn.Module):
 
         else:  # inference
             io = p.clone()  # inference output
+            #print(io.shape)
             io[..., :2] = torch.sigmoid(io[..., :2]) + self.grid  # xy
             io[..., 2:4] = torch.exp(io[..., 2:4]) * self.anchor_wh  # wh yolo method
             io[..., :4] *= self.stride
@@ -230,6 +251,12 @@ class Darknet(nn.Module):
 
         self.module_defs = parse_model_cfg(cfg)
         self.module_list, self.routs = create_modules(self.module_defs, img_size, cfg)
+        self.outlayer1 = OutLayer()
+        self.outlayer2 = OutLayer()
+        self.outlayer3 = OutLayer()
+        self.outlayer4 = OutLayer()
+        self.outlayer5 = OutLayer()
+        self.out_index = 1
         self.yolo_layers = get_yolo_layers(self)
         # torch_utils.initialize_weights(self)
 
@@ -294,6 +321,23 @@ class Darknet(nn.Module):
                 x = module(x, out)  # WeightedFeatureFusion(), FeatureConcat()
             elif name == 'YOLOLayer':
                 yolo_out.append(module(x, out))
+            elif name == 'OutLayer':
+                if self.out_index == 1:
+                    x = self.outlayer1(x)
+                    self.out_index += 1
+                elif self.out_index == 2:
+                    x = self.outlayer2(x)
+                    self.out_index += 1
+                elif self.out_index == 3:
+                    x = self.outlayer3(x)
+                    self.out_index += 1
+                elif self.out_index == 4:
+                    x = self.outlayer4(x)
+                    self.out_index += 1
+                else:
+                    x = self.outlayer5(x)
+                    self.out_index = 1
+
             else:  # run module directly, i.e. mtype = 'convolutional', 'upsample', 'maxpool', 'batchnorm2d' etc.
                 x = module(x)
 
