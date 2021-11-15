@@ -350,11 +350,10 @@ def smooth_BCE(eps=0.1):  # https://github.com/ultralytics/yolov3/issues/238#iss
     return 1.0 - 0.5 * eps, 0.5 * eps
 
 
-def compute_loss(p, targets, model):  # predictions, targets, model
+def compute_loss(p, targets, h, model, nc=1):  # predictions, targets, model, number of class
     ft = torch.cuda.FloatTensor if p[0].is_cuda else torch.Tensor
     lcls, lbox, lobj = ft([0]), ft([0]), ft([0])
-    tcls, tbox, indices, anchors = build_targets(p, targets, model)  # targets
-    h = model.hyp  # hyperparameters
+    tcls, tbox, indices, anchors = build_targets(p, targets, h, model)  # targets
     red = 'mean'  # Loss reduction (sum or mean)
 
     # Define criteria
@@ -388,10 +387,11 @@ def compute_loss(p, targets, model):  # predictions, targets, model
             lbox += (1.0 - giou).sum() if red == 'sum' else (1.0 - giou).mean()  # giou loss
 
             # Obj
-            tobj[b, a, gj, gi] = (1.0 - model.gr) + model.gr * giou.detach().clamp(0).type(tobj.dtype)  # giou ratio
+            #tobj[b, a, gj, gi] = (1.0 - model.gr) + model.gr * giou.detach().clamp(0).type(tobj.dtype)  # giou ratio
+            tobj[b, a, gj, gi] = giou.detach().clamp(0).type(tobj.dtype)
 
             # Class
-            if model.nc > 1:  # cls loss (only if multiple classes)
+            if nc > 1:  # cls loss (only if multiple classes)
                 t = torch.full_like(ps[:, 5:], cn)  # targets
                 t[range(nb), tcls[i]] = cp
                 lcls += BCEcls(ps[:, 5:], t)  # BCE
@@ -417,7 +417,7 @@ def compute_loss(p, targets, model):  # predictions, targets, model
     return loss, torch.cat((lbox, lobj, lcls, loss)).detach()
 
 
-def build_targets(p, targets, model):
+def build_targets(p, targets, hyp, model):
     # Build targets for compute_loss(), input targets(image,class,x,y,w,h)
     nt = targets.shape[0]
     tcls, tbox, indices, anch = [], [], [], []
@@ -437,7 +437,7 @@ def build_targets(p, targets, model):
         if nt:
             # r = t[None, :, 4:6] / anchors[:, None]  # wh ratio
             # j = torch.max(r, 1. / r).max(2)[0] < model.hyp['anchor_t']  # compare
-            j = wh_iou(anchors, t[:, 4:6]) > model.hyp['iou_t']  # iou(3,n) = wh_iou(anchors(3,2), gwh(n,2))
+            j = wh_iou(anchors, t[:, 4:6]) > hyp['iou_t']  # iou(3,n) = wh_iou(anchors(3,2), gwh(n,2))
             a, t = at[j], t.repeat(na, 1, 1)[j]  # filter
 
             # overlaps
@@ -468,10 +468,10 @@ def build_targets(p, targets, model):
         tbox.append(torch.cat((gxy - gij, gwh), 1))  # box
         anch.append(anchors[a])  # anchors
         tcls.append(c)  # class
-        if c.shape[0]:  # if any targets
-            assert c.max() < model.nc, 'Model accepts %g classes labeled from 0-%g, however you labelled a class %g. ' \
-                                       'See https://github.com/ultralytics/yolov3/wiki/Train-Custom-Data' % (
-                                           model.nc, model.nc - 1, c.max())
+        #if c.shape[0]:  # if any targets
+        #    assert c.max() < model.nc, 'Model accepts %g classes labeled from 0-%g, however you labelled a class %g. ' \
+        #                               'See https://github.com/ultralytics/yolov3/wiki/Train-Custom-Data' % (
+        #                                   model.nc, model.nc - 1, c.max())
 
     return tcls, tbox, indices, anch
 
@@ -807,6 +807,8 @@ def output_to_target(output, width, height):
     targets = []
     for i, o in enumerate(output):
         if o is not None:
+            if isinstance(o, torch.Tensor):
+                o = o.cpu().numpy()
             for pred in o:
                 box = pred[:4]
                 w = (box[2] - box[0]) / width
@@ -1058,7 +1060,7 @@ def plot_results(start=0, stop=0, bucket='', id=()):  # from utils.utils import 
         os.system('rm -rf storage.googleapis.com')
         files = ['https://storage.googleapis.com/%s/results%g.txt' % (bucket, x) for x in id]
     else:
-        files = glob.glob('results*.txt') + glob.glob('../../Downloads/results*.txt')
+        files = glob.glob('yolov3*.txt') + glob.glob('../../Downloads/results*.txt')
     for f in sorted(files):
         try:
             results = np.loadtxt(f, usecols=[2, 3, 4, 8, 9, 12, 13, 14, 10, 11], ndmin=2).T
@@ -1069,12 +1071,12 @@ def plot_results(start=0, stop=0, bucket='', id=()):  # from utils.utils import 
                 if i in [0, 1, 2, 5, 6, 7]:
                     y[y == 0] = np.nan  # dont show zero loss values
                     # y /= y[0]  # normalize
-                ax[i].plot(x, y, marker='.', label=Path(f).stem, linewidth=2, markersize=8)
+                ax[i].plot(x, y, marker='.', label=Path(f).stem, linewidth=1, markersize=8)
                 ax[i].set_title(s[i])
                 # if i in [5, 6, 7]:  # share train and val loss y axes
                 #     ax[i].get_shared_y_axes().join(ax[i], ax[i - 5])
         except:
             print('Warning: Plotting error for %s, skipping file' % f)
 
-    ax[1].legend()
+    ax[8].legend()
     fig.savefig('results.png', dpi=200)
